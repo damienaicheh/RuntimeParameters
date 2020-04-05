@@ -1,0 +1,11 @@
+variables:
+  - name: xamarinSdkVersion
+    value: '6_6_0'
+  - name: solutionPath
+    value: '**/*.sln'
+  - name: buildConfiguration
+    value: 'Release'
+  - name: androidDistributionGroupId
+    value: '6a753c4d-d959-45a5-ae9a-61bb9b4a49e4'
+  - name: iOSDistributionGroupId
+    value: '581d912d-6f9e-4cd2-9ef8-885dc7cee34b'

@@ -1,0 +1,205 @@
+parameters:
+  - name: configuration
+    displayName: Configuration
+    type: string
+    default: development
+    values:
+    - development
+    - demo
+    - staging
+    - production
+
+  - name: bannerName
+    displayName: Display name of the banner (Launch Icon Badge)
+    type: string
+    default: ''
+
+  - name: iOSBuild
+    displayName: Build iOS
+    type: boolean
+    default: true
+
+  - name: iOSDistribute
+    displayName: Distribute iOS (Only if build is checked)
+    type: boolean
+    default: false
+
+  - name: iOSImage
+    displayName: Mac pool image
+    type: string
+    default: macOS-latest
+    values:
+    - macOS-latest
+    - macOS-10.14
+
+  - name: androidBuild
+    displayName: Build Android
+    type: boolean
+    default: true
+
+  - name: androidDistribute
+    displayName: Distribute Android (Only if build is checked)
+    type: boolean
+    default: false
+    
+  # Need macos to run the select-xamarin-sdk.sh for building .aab online.
+  - name: androidImage
+    displayName: Android pool image
+    type: string
+    default: macOS-10.14
+    values:
+    - macOS-latest 
+    - macOS-10.14
+    - ubuntu-latest
+    - ubuntu-16.04
+
+pool:
+  vmImage: windows-latest
+
+trigger:
+  - none
+
+resources:
+  repositories:
+  - repository: templates
+    type: github
+    name: damienaicheh/AzureDevOpsTemplates
+    ref: refs/tags/v1.0.0
+    endpoint: GitHubTemplates
+
+variables:
+  - group: xamarin-full-pipeline
+  - template: variables.yml
+
+stages:
+  - stage: Run_Unit_Tests
+    jobs:
+      - job:
+        pool:
+          vmImage: ubuntu-latest
+        displayName: 'Run Unit Tests'
+        steps:
+          - template: run_unit_tests.yml@templates
+            parameters:
+              solutionPath: '$(solutionPath)'
+              projects: '$(Build.SourcesDirectory)/XamarinDevOps.Tests/*.csproj'
+              buildConfiguration: '$(buildConfiguration)'
+
+  - stage: Build_Xamarin_Android
+    condition: ${{ parameters.androidBuild }}
+    dependsOn: Run_Unit_Tests
+    jobs:
+      - job:
+        pool:
+          vmImage: ${{ parameters.androidImage }}
+        displayName: 'Build Xamarin.Android'
+        workspace:
+          clean: all
+        steps:
+          - template: init_restore.yml@templates
+            parameters:
+              solutionPath: '$(solutionPath)'
+
+          - template: bump_android_manifest_version.yml@templates
+            parameters:
+              androidManifestPath: '$(Build.SourcesDirectory)/XamarinDevOps.Android/Properties/AndroidManifest.xml'
+
+          - template: icon_banner.yml@templates
+            parameters:
+              sourceFolder: '$(Build.SourcesDirectory)/XamarinDevOps.Android/Resources'
+              contents: '**/icon.png'
+              versionName: ${{ parameters.bannerName }}
+
+          - template: copy_content_file.yml@templates
+            parameters:
+              sourceFile: '$(Build.SourcesDirectory)/configurations/config-${{ parameters.configuration }}.json'
+              targetFile: '$(Build.SourcesDirectory)/XamarinDevOps.Android/Assets/config.json'
+          
+          - template: build_xamarin_android.yml@templates
+            parameters:
+              xamarinSdkVersion: '$(xamarinSdkVersion)'
+              packageFormat: 'apk' # Choose apk or aab depending on your needs
+              projectFile: '$(Build.SourcesDirectory)/XamarinDevOps.Android/*.csproj'
+              buildConfiguration: '$(buildConfiguration)'
+              apksignerKeystoreFile: 'production.jks'
+              apksignerKeystorePassword: $(keystore.password)
+              apksignerKeystoreAlias: $(key.alias)
+              apksignerKeyPassword: $(key.password)
+          
+          - template: publish_artifacts.yml@templates
+            parameters:
+              sourceFolder: '$(Build.SourcesDirectory)/XamarinDevOps.Android/bin/$(buildConfiguration)'
+              contents: '*Signed.apk'
+              artifactName: '$(buildConfiguration)_android'
+
+  - stage: Build_Xamarin_iOS
+    condition: ${{ parameters.iOSBuild }}
+    dependsOn: Run_Unit_Tests
+    jobs:
+      - job:
+        pool:
+          vmImage: ${{ parameters.iOSImage }}
+        displayName: 'Build Xamarin.iOS'
+        workspace:
+          clean: all
+        steps:
+          - template: init_restore.yml@templates
+            parameters:
+              solutionPath: '$(solutionPath)'
+
+          - template: bump_ios_version.yml@templates
+            parameters:
+              infoPlistPath: '$(Build.SourcesDirectory)/XamarinDevOps.iOS/Info.plist'
+
+          - template: icon_banner.yml@templates
+            parameters:
+              sourceFolder: '$(Build.SourcesDirectory)/XamarinDevOps.iOS/Assets.xcassets/AppIcon.appiconset'
+              versionName: ${{ parameters.bannerName }}
+
+          - template: copy_content_file.yml@templates
+            parameters:
+              sourceFile: '$(Build.SourcesDirectory)/configurations/config-${{ parameters.configuration }}.json'
+              targetFile: '$(Build.SourcesDirectory)/XamarinDevOps.iOS/Assets/config.json'
+
+          - template: build_xamarin_ios_ipa.yml@templates
+            parameters:
+              xamarinSdkVersion: '$(xamarinSdkVersion)'
+              p12FileName: '$(p12FileName)'
+              p12Password: '$(p12Password)'
+              provisioningProfile: '$(provisioningProfile)'
+              solutionPath: '$(solutionPath)'
+              buildConfiguration: '$(buildConfiguration)'
+              signingIdentity: '$(APPLE_CERTIFICATE_SIGNING_IDENTITY)'
+              signingProvisioningProfileID: '$(APPLE_PROV_PROFILE_UUID)'
+
+          - template: publish_artifacts.yml@templates
+            parameters:
+              sourceFolder: '$(Build.SourcesDirectory)/XamarinDevOps.iOS/bin/iPhone/$(buildConfiguration)'
+              contents: '*.ipa'
+              artifactName: '$(buildConfiguration)_ios'
+
+  - stage: Deploy_Android
+    condition: ${{ parameters.androidDistribute }}
+    dependsOn: Build_Xamarin_Android
+    jobs:
+      - job:
+        displayName: 'Deploy Xamarin.Android'
+        steps:
+          - template: deploy_to_app_center.yml@templates
+            parameters:
+              appSlug: '$(androidAppSlug)'
+              fileToPublish: '$(buildConfiguration)_android/*.apk'
+              distributionGroupId: '$(androidDistributionGroupId)'
+
+  - stage: Deploy_iOS
+    condition: ${{ parameters.iosDistribute }}
+    dependsOn: Build_Xamarin_iOS
+    jobs:
+      - job:
+        displayName: 'Deploy Xamarin.iOS'
+        steps:
+          - template: deploy_to_app_center.yml@templates
+            parameters:
+              appSlug: '$(iOSAppSlug)'
+              fileToPublish: '$(buildConfiguration)_ios/*.ipa'
+              distributionGroupId: '$(iOSDistributionGroupId)'
